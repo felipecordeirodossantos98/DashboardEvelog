@@ -356,6 +356,59 @@ mapa_regiao = {
 
 if base_unificada is not None and not base_unificada.empty:
 
+    base_unificada["Dt Emissao"] = base_unificada["Dt Emissao"].astype(str).str.strip()
+
+    base_unificada["Dt Emissao"] = pd.to_datetime(
+        base_unificada["Dt Emissao"],
+        dayfirst=True,
+        errors="coerce"
+    )
+
+    df_datas_validas = base_unificada.dropna(subset=["Dt Emissao"])
+
+    min_emissao = df_datas_validas["Dt Emissao"].min().date()
+    max_emissao = df_datas_validas["Dt Emissao"].max().date()
+
+    # 🔲 Criação das colunas
+    col_filtro, _, col_metric1 = st.columns([1, 2, 1])
+
+    with col_filtro:
+        # Identificador da base (pode ser quantidade + datas)
+        hash_base = (len(base_unificada), min_emissao, max_emissao)
+
+        if "hash_base" not in st.session_state:
+            st.session_state.hash_base = None
+
+        if st.session_state.hash_base != hash_base:
+            st.session_state.filtro_global_emissao = (min_emissao, max_emissao)
+            st.session_state.hash_base = hash_base
+
+        data_emissao = st.date_input(
+            "📅 Período de emissão dos pedidos",
+            value=(min_emissao, max_emissao),
+            min_value=min_emissao,
+            max_value=max_emissao,
+            key="filtro_global_emissao"
+        )
+
+    if isinstance(data_emissao, tuple) and len(data_emissao) == 2:
+        data_ini, data_fim = data_emissao
+
+        base_unificada = base_unificada[
+            (base_unificada["Dt Emissao"].notna()) &
+            (base_unificada["Dt Emissao"].dt.date >= data_ini) &
+            (base_unificada["Dt Emissao"].dt.date <= data_fim)
+        ]
+
+    qtd_pedidos = len(base_unificada)
+
+    with col_metric1:
+
+        st.metric(
+            label="Pedidos no período",
+            value=f"{qtd_pedidos:,}".replace(",", ".")
+        )
+
     df = base_unificada.copy()
     df_perf = base_unificada.copy()
 
@@ -458,58 +511,6 @@ f"""<style>
 
     botao_exportar_excel(base_unificada, nome_arquivo="base_completa.xlsx")
 
-    base_unificada["Dt Emissao"] = base_unificada["Dt Emissao"].astype(str).str.strip()
-
-    base_unificada["Dt Emissao"] = pd.to_datetime(
-        base_unificada["Dt Emissao"],
-        dayfirst=True,
-        errors="coerce"
-    )
-
-    df_datas_validas = base_unificada.dropna(subset=["Dt Emissao"])
-
-    min_emissao = df_datas_validas["Dt Emissao"].min().date()
-    max_emissao = df_datas_validas["Dt Emissao"].max().date()
-
-    # 🔲 Criação das colunas
-    col_filtro, _, col_metric1 = st.columns([1, 2, 1])
-
-    with col_filtro:
-        # Identificador da base (pode ser quantidade + datas)
-        hash_base = (len(base_unificada), min_emissao, max_emissao)
-
-        if "hash_base" not in st.session_state:
-            st.session_state.hash_base = None
-
-        if st.session_state.hash_base != hash_base:
-            st.session_state.filtro_global_emissao = (min_emissao, max_emissao)
-            st.session_state.hash_base = hash_base
-
-        data_emissao = st.date_input(
-            "📅 Período de emissão dos pedidos",
-            value=(min_emissao, max_emissao),
-            min_value=min_emissao,
-            max_value=max_emissao,
-            key="filtro_global_emissao"
-        )
-
-    if isinstance(data_emissao, tuple) and len(data_emissao) == 2:
-        data_ini, data_fim = data_emissao
-
-        base_unificada = base_unificada[
-            (base_unificada["Dt Emissao"].notna()) &
-            (base_unificada["Dt Emissao"].dt.date >= data_ini) &
-            (base_unificada["Dt Emissao"].dt.date <= data_fim)
-        ]
-
-    qtd_pedidos = len(base_unificada)
-
-    with col_metric1:
-
-        st.metric(
-            label="Pedidos no período",
-            value=f"{qtd_pedidos:,}".replace(",", ".")
-        )
 # -------------------------------------------
 # DASHBOARD
 # -------------------------------------------
