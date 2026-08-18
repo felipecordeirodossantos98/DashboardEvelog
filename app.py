@@ -299,7 +299,7 @@ def carregar_planilha(file):
                 "DEVOLUCAO POR INSTRUCAO REMETENTE": "DEVOLUCAO",
                 "DEVOLUCAO RECUSADA": "DEVOLUCAO",
 
-                "": "SEM OCORRENCIA",
+                "": "LAST MILE",
 
             }
 
