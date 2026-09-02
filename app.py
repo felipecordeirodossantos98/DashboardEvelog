@@ -44,7 +44,12 @@ def botao_exportar_excel(df, nome_arquivo="base_unificada.xlsx", usar_sidebar=Tr
 # -------------------------------------------
 # CONFIGURAÇÃO DA PÁGINA
 # -------------------------------------------
-st.set_page_config(page_title="Dashboard Evelog", layout="wide")
+st.set_page_config(
+    page_title="Dashboard Evelog",
+    page_icon="images/evelog-favicon.svg",
+    layout="wide"
+)
+
 st.sidebar.image("images/logo.svg", width=180)
 st.title("Dashboard Evelog")
 
