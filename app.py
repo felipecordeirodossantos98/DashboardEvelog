@@ -3,6 +3,19 @@ import pandas as pd
 import plotly.express as px
 import unicodedata
 import altair as alt
+import streamlit.components.v1 as components
+
+components.html(
+    """
+    <script>
+        window.parent.addEventListener("beforeunload", function (event) {
+            event.preventDefault();
+            event.returnValue = "";
+        });
+    </script>
+    """,
+    height=0,
+)
 
 def normalizar_colunas(df):
     novas_colunas = []
