@@ -1,0 +1,288 @@
+"""Aba de Pedidos Em Aberto."""
+
+from __future__ import annotations
+
+import pandas as pd
+import streamlit as st
+
+from ..charts import barras_com_rotulo
+from ..data import aplicar_filtros_abertos, preparar_abertos
+from ..ui import botao_exportar_excel
+
+
+_PREFIX = "abertos_"
+
+
+def _key(nome: str) -> str:
+    return f"{_PREFIX}{nome}"
+
+
+def _inicializar_estado() -> None:
+    defaults = {
+        _key("dias"): [],
+        _key("status"): [],
+        _key("ocorrencias"): [],
+        _key("dias_sem_mov"): [],
+        _key("dias_widget"): [],
+        _key("tipo_anterior"): None,
+    }
+    for chave, valor in defaults.items():
+        if chave not in st.session_state:
+            st.session_state[chave] = valor
+
+
+def _limpar_filtros() -> None:
+    for nome in ("dias", "status", "ocorrencias", "dias_sem_mov", "dias_widget"):
+        st.session_state[_key(nome)] = []
+
+
+def _rotulo_dia(valor: float, tipo: str) -> str:
+    dia = int(valor)
+    if tipo == "Em atraso":
+        return "1 dia em atraso" if dia == 1 else f"{dia} dias em atraso"
+    if dia == 0:
+        return "Vence hoje"
+    return "1 dia para vencer" if dia == 1 else f"{dia} dias para vencer"
+
+
+def _sanitizar_estado(chave: str, opcoes) -> None:
+    permitidos = set(opcoes)
+    st.session_state[chave] = [
+        valor for valor in st.session_state.get(chave, []) if valor in permitidos
+    ]
+
+
+def render(df_abertos: pd.DataFrame) -> None:
+    """Renderiza a aba de pedidos em aberto."""
+    if df_abertos.empty:
+        st.info("Não há pedidos em aberto na base.")
+        return
+
+    _inicializar_estado()
+
+    st.header("Pedidos Em Aberto")
+    st.caption(f"Total de pedidos em aberto: {len(df_abertos)}")
+
+    col_tipo, col_metrica = st.columns([3, 1])
+    with col_tipo:
+        tipo = st.radio(
+            "Visualização",
+            ["Em atraso", "No prazo"],
+            horizontal=True,
+            key=_key("tipo"),
+        )
+
+    # Ao trocar de visão, valores da visão anterior não são reaproveitados por engano.
+    if st.session_state[_key("tipo_anterior")] != tipo:
+        _limpar_filtros()
+        st.session_state[_key("tipo_anterior")] = tipo
+
+    total_tipo = (
+        df_abertos["Prazo"].astype(str).str.contains("ATRASADO", na=False).sum()
+        if tipo == "Em atraso"
+        else df_abertos["Prazo"].astype(str).str.contains("FALTAM", na=False).sum()
+    )
+    with col_metrica:
+        st.metric(
+            "Total de pedidos em atraso" if tipo == "Em atraso" else "Total de pedidos no prazo",
+            int(total_tipo),
+        )
+
+    base = preparar_abertos(df_abertos, tipo)
+
+    titulos = {
+        "Em atraso": {
+            "dias": "Distribuição de Pedidos em Atraso por Dias de Atraso",
+            "status": "Status (Pedidos em atraso)",
+            "ocorrencias": "Ocorrencias (Pedidos em atraso)",
+            "mov": "Dias sem movimentação (Pedidos em atraso)",
+            "tabela": "Pedidos filtrados (Pedidos em atraso)",
+            "eixo_dias": "Dias em Atraso",
+            "arquivo": "em_atraso",
+        },
+        "No prazo": {
+            "dias": "Distribuição de Pedidos no Prazo por Dias Restantes",
+            "status": "Status (Pedidos no Prazo)",
+            "ocorrencias": "Ocorrencias (Pedidos no Prazo)",
+            "mov": "Dias sem movimentação (Pedidos no Prazo)",
+            "tabela": "Pedidos filtrados (Pedidos no Prazo)",
+            "eixo_dias": "Dias até o Vencimento",
+            "arquivo": "no_prazo",
+        },
+    }[tipo]
+
+    col_dias, col_status, col_oc, col_mov = st.columns(4)
+
+    with col_dias:
+        temp = aplicar_filtros_abertos(
+            base,
+            status=st.session_state[_key("status")],
+            ocorrencias=st.session_state[_key("ocorrencias")],
+            dias_sem_mov=st.session_state[_key("dias_sem_mov")],
+        )
+        dias_opcoes = sorted(temp["Dias"].dropna().unique())
+        _sanitizar_estado(_key("dias"), dias_opcoes)
+
+        mapa_valor_label = {valor: _rotulo_dia(valor, tipo) for valor in dias_opcoes}
+        mapa_label_valor = {label: valor for valor, label in mapa_valor_label.items()}
+        labels = list(mapa_label_valor)
+
+        # Mantém o widget sincronizado com a seleção numérica real.
+        labels_atuais = [
+            mapa_valor_label[dia]
+            for dia in st.session_state[_key("dias")]
+            if dia in mapa_valor_label
+        ]
+        if any(label not in labels for label in st.session_state[_key("dias_widget")]):
+            st.session_state[_key("dias_widget")] = labels_atuais
+
+        selecionados = st.multiselect(
+            "Dias em atraso" if tipo == "Em atraso" else "Dias até o vencimento",
+            labels,
+            key=_key("dias_widget"),
+        )
+        st.session_state[_key("dias")] = [
+            mapa_label_valor[label] for label in selecionados if label in mapa_label_valor
+        ]
+
+    with col_status:
+        temp = aplicar_filtros_abertos(
+            base,
+            dias=st.session_state[_key("dias")],
+            ocorrencias=st.session_state[_key("ocorrencias")],
+            dias_sem_mov=st.session_state[_key("dias_sem_mov")],
+        )
+        status_opcoes = sorted(
+            temp["Status"].dropna().astype(str).str.strip().unique()
+        )
+        _sanitizar_estado(_key("status"), status_opcoes)
+        st.multiselect("Status", status_opcoes, key=_key("status"))
+
+    with col_oc:
+        temp = aplicar_filtros_abertos(
+            base,
+            dias=st.session_state[_key("dias")],
+            status=st.session_state[_key("status")],
+            dias_sem_mov=st.session_state[_key("dias_sem_mov")],
+        )
+        ocorrencias_opcoes = sorted(
+            temp["Ocorrencias"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .loc[lambda serie: serie.ne("")]
+            .unique()
+        )
+        _sanitizar_estado(_key("ocorrencias"), ocorrencias_opcoes)
+        st.multiselect("Ocorrências", ocorrencias_opcoes, key=_key("ocorrencias"))
+
+    with col_mov:
+        temp = aplicar_filtros_abertos(
+            base,
+            dias=st.session_state[_key("dias")],
+            status=st.session_state[_key("status")],
+            ocorrencias=st.session_state[_key("ocorrencias")],
+        )
+        dias_sem_mov_opcoes = sorted(
+            temp["Dias_sem_mov"].dropna().astype(int).unique()
+        )
+        _sanitizar_estado(_key("dias_sem_mov"), dias_sem_mov_opcoes)
+        st.multiselect(
+            "Dias sem movimentação",
+            dias_sem_mov_opcoes,
+            key=_key("dias_sem_mov"),
+        )
+
+    st.button("Limpar filtros", on_click=_limpar_filtros, key=_key("limpar"))
+
+    filtrado = aplicar_filtros_abertos(
+        base,
+        dias=st.session_state[_key("dias")],
+        status=st.session_state[_key("status")],
+        ocorrencias=st.session_state[_key("ocorrencias")],
+        dias_sem_mov=st.session_state[_key("dias_sem_mov")],
+    )
+
+    if filtrado.empty:
+        st.info("Nenhum pedido corresponde aos filtros selecionados.")
+        return
+
+    distribuicao = (
+        filtrado.groupby("Dias").size().reset_index(name="Quantidade").sort_values("Dias")
+    )
+    st.subheader(titulos["dias"])
+    st.altair_chart(
+        barras_com_rotulo(
+            distribuicao,
+            categoria="Dias",
+            valor="Quantidade",
+            titulo_categoria=titulos["eixo_dias"],
+        ),
+        use_container_width=True,
+    )
+
+    status_df = (
+        filtrado.groupby("Status").size().reset_index(name="Quantidade")
+        .sort_values("Quantidade", ascending=False)
+    )
+    if not status_df.empty:
+        st.subheader(titulos["status"])
+        st.altair_chart(
+            barras_com_rotulo(
+                status_df,
+                categoria="Status",
+                horizontal=True,
+                titulo_categoria="Status",
+            ),
+            use_container_width=True,
+        )
+
+    ocorrencias_validas = filtrado[
+        filtrado["Ocorrencias"].notna()
+        & filtrado["Ocorrencias"].astype(str).str.strip().ne("")
+    ]
+    ocorrencias_df = (
+        ocorrencias_validas.groupby("Ocorrencias")
+        .size()
+        .reset_index(name="Quantidade")
+        .sort_values("Quantidade", ascending=False)
+    )
+    if not ocorrencias_df.empty:
+        st.subheader(titulos["ocorrencias"])
+        st.altair_chart(
+            barras_com_rotulo(
+                ocorrencias_df,
+                categoria="Ocorrencias",
+                horizontal=True,
+                titulo_categoria="Ocorrências",
+            ),
+            use_container_width=True,
+        )
+
+    mov_df = (
+        filtrado.groupby("Dias_sem_mov")
+        .size()
+        .reset_index(name="Quantidade")
+        .sort_values("Dias_sem_mov")
+    )
+    if not mov_df.empty:
+        st.subheader(titulos["mov"])
+        st.altair_chart(
+            barras_com_rotulo(
+                mov_df,
+                categoria="Dias_sem_mov",
+                titulo_categoria="Dias sem movimentação",
+                titulo_valor="Quantidade de pedidos",
+            ),
+            use_container_width=True,
+        )
+
+    st.subheader(titulos["tabela"])
+    st.caption(f"Total: {len(filtrado)}")
+    st.dataframe(filtrado, use_container_width=True, hide_index=True)
+    botao_exportar_excel(
+        filtrado,
+        nome_arquivo=f"base_em_aberto_{titulos['arquivo']}.xlsx",
+        usar_sidebar=False,
+        key=_key("exportar"),
+    )
