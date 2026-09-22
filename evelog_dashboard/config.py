@@ -4,9 +4,20 @@ Manter os valores de negócio neste módulo evita duplicação nas views e
 facilita alterações futuras sem precisar procurar regras espalhadas pela UI.
 """
 
+from pathlib import Path
+
+
+# Caminhos sempre relativos à pasta do projeto, e não ao diretório de onde
+# o comando ``streamlit run`` foi executado. Isso evita erros ao iniciar o app
+# a partir da pasta pai, VS Code, systemd, Streamlit Cloud etc.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+IMAGES_DIR = PROJECT_ROOT / "images"
+LOGO_PATH = IMAGES_DIR / "logo.svg"
+PAGE_ICON = IMAGES_DIR / "evelog-favicon.svg"
+
 PAGE_TITLE = "Dashboard Evelog"
-PAGE_ICON = "images/evelog-favicon.svg"
-LOGO_PATH = "images/logo.svg"
+# O Streamlit aceita emoji como ícone. Se o SVG não estiver no projeto, o app
+# continua funcionando em vez de falhar por causa de um recurso visual.
 
 STATUS_EXCLUIDOS = {
     "DEVOLVIDO",
@@ -54,6 +65,7 @@ MAPA_OCORRENCIAS = {
     "MUDOU-SE": "PROB. ENDEREÇO",
     "NUMERO NAO LOCALIZADO": "PROB. ENDEREÇO",
     "CEP ERRADO": "PROB. ENDEREÇO",
+    "ENDERECO EM ZONA RURAL": "PROB. ENDEREÇO",
 
     # Agência
     "DESTINATARIO SOLICITOU RETIRAR NA UNIDADE": "AG. RETIRADA AGÊNCIA",
@@ -69,7 +81,7 @@ MAPA_OCORRENCIAS = {
     "SAIDA FISCALIZACAO": "PROB. FISCAL",
 
     # Zona rural
-    "ENDERECO EM ZONA RURAL": "ZONA RURAL",
+    #"ENDERECO EM ZONA RURAL": "ZONA RURAL",
 
     # Middle Mile
     "BUSCA": "MIDDLE MILE",
@@ -142,12 +154,14 @@ MAPA_REGIAO = {
 }
 
 OCORRENCIAS_JUSTIFICADAS = ("DEST. AUSENTE", "PROB. ENDEREÇO")
+OPCAO_BAIXAS_INDEVIDAS = "Baixas indevidas"
 
 COLUNAS_EXPORT_ATRASOS = [
     "Codigo",
     "Destino",
     "Dt Evento",
     "Previsao",
+    "Previsao Ajustada",
     "Dias Atraso",
     "Faixa Atraso",
     "Ocorrencias",

@@ -7,7 +7,13 @@ import streamlit as st
 
 from ..charts import barras_com_rotulo
 from ..data import aplicar_filtros_abertos, preparar_abertos
-from ..ui import botao_exportar_excel
+from ..ui import (
+    botao_exportar_excel,
+    extrair_primeiro_ponto_selecionado,
+    nome_seguro_arquivo,
+    renderizar_download_selecao,
+    renderizar_plotly_selecionavel,
+)
 
 
 _PREFIX = "abertos_"
@@ -207,35 +213,93 @@ def render(df_abertos: pd.DataFrame) -> None:
         st.info("Nenhum pedido corresponde aos filtros selecionados.")
         return
 
+    def renderizar_agregado(
+        resumo: pd.DataFrame,
+        *,
+        titulo: str,
+        categoria: str,
+        filtro_col: str,
+        grafico_key: str,
+        arquivo_prefixo: str,
+        horizontal: bool = False,
+        titulo_categoria: str | None = None,
+        titulo_valor: str | None = None,
+        numerico: bool = False,
+    ) -> None:
+        if resumo.empty:
+            return
+
+        st.subheader(titulo)
+        evento = renderizar_plotly_selecionavel(
+            barras_com_rotulo(
+                resumo,
+                categoria=categoria,
+                valor="Quantidade",
+                horizontal=horizontal,
+                titulo_categoria=titulo_categoria or categoria,
+                titulo_valor=titulo_valor or "Quantidade",
+            ),
+            key=_key(grafico_key),
+        )
+        ponto = extrair_primeiro_ponto_selecionado(evento)
+        if not ponto:
+            return
+
+        selecionado = ponto.get("y" if horizontal else "x")
+        if selecionado is None:
+            return
+
+        if numerico:
+            valor_num = pd.to_numeric(pd.Series([selecionado]), errors="coerce").iloc[0]
+            if pd.isna(valor_num):
+                return
+            serie = pd.to_numeric(filtrado[filtro_col], errors="coerce")
+            base_selecionada = filtrado[serie.eq(valor_num)].copy()
+            descricao = f"{titulo_categoria or filtro_col}: {int(valor_num) if float(valor_num).is_integer() else valor_num}"
+        else:
+            valor_txt = str(selecionado)
+            base_selecionada = filtrado[
+                filtrado[filtro_col].astype(str).eq(valor_txt)
+            ].copy()
+            descricao = f"{titulo_categoria or filtro_col}: {valor_txt}"
+
+        renderizar_download_selecao(
+            base_selecionada,
+            descricao=descricao,
+            nome_arquivo=(
+                f"{arquivo_prefixo}_{nome_seguro_arquivo(selecionado)}.xlsx"
+            ),
+            key=_key(f"download_{grafico_key}"),
+        )
+
     distribuicao = (
         filtrado.groupby("Dias").size().reset_index(name="Quantidade").sort_values("Dias")
     )
-    st.subheader(titulos["dias"])
-    st.altair_chart(
-        barras_com_rotulo(
-            distribuicao,
-            categoria="Dias",
-            valor="Quantidade",
-            titulo_categoria=titulos["eixo_dias"],
-        ),
-        use_container_width=True,
+    renderizar_agregado(
+        distribuicao,
+        titulo=titulos["dias"],
+        categoria="Dias",
+        filtro_col="Dias",
+        grafico_key="grafico_dias",
+        arquivo_prefixo=f"base_{titulos['arquivo']}_dias",
+        titulo_categoria=titulos["eixo_dias"],
+        numerico=True,
     )
 
     status_df = (
         filtrado.groupby("Status").size().reset_index(name="Quantidade")
         .sort_values("Quantidade", ascending=False)
     )
-    if not status_df.empty:
-        st.subheader(titulos["status"])
-        st.altair_chart(
-            barras_com_rotulo(
-                status_df,
-                categoria="Status",
-                horizontal=True,
-                titulo_categoria="Status",
-            ),
-            use_container_width=True,
-        )
+    renderizar_agregado(
+        status_df,
+        titulo=titulos["status"],
+        categoria="Status",
+        filtro_col="Status",
+        grafico_key="grafico_status",
+        arquivo_prefixo=f"base_{titulos['arquivo']}_status",
+        horizontal=True,
+        titulo_categoria="Status",
+    )
 
     ocorrencias_validas = filtrado[
         filtrado["Ocorrencias"].notna()
@@ -247,17 +311,16 @@ def render(df_abertos: pd.DataFrame) -> None:
         .reset_index(name="Quantidade")
         .sort_values("Quantidade", ascending=False)
     )
-    if not ocorrencias_df.empty:
-        st.subheader(titulos["ocorrencias"])
-        st.altair_chart(
-            barras_com_rotulo(
-                ocorrencias_df,
-                categoria="Ocorrencias",
-                horizontal=True,
-                titulo_categoria="Ocorrências",
-            ),
-            use_container_width=True,
-        )
+    renderizar_agregado(
+        ocorrencias_df,
+        titulo=titulos["ocorrencias"],
+        categoria="Ocorrencias",
+        filtro_col="Ocorrencias",
+        grafico_key="grafico_ocorrencias",
+        arquivo_prefixo=f"base_{titulos['arquivo']}_ocorrencia",
+        horizontal=True,
+        titulo_categoria="Ocorrências",
+    )
 
     mov_df = (
         filtrado.groupby("Dias_sem_mov")
@@ -265,21 +328,21 @@ def render(df_abertos: pd.DataFrame) -> None:
         .reset_index(name="Quantidade")
         .sort_values("Dias_sem_mov")
     )
-    if not mov_df.empty:
-        st.subheader(titulos["mov"])
-        st.altair_chart(
-            barras_com_rotulo(
-                mov_df,
-                categoria="Dias_sem_mov",
-                titulo_categoria="Dias sem movimentação",
-                titulo_valor="Quantidade de pedidos",
-            ),
-            use_container_width=True,
-        )
+    renderizar_agregado(
+        mov_df,
+        titulo=titulos["mov"],
+        categoria="Dias_sem_mov",
+        filtro_col="Dias_sem_mov",
+        grafico_key="grafico_movimentacao",
+        arquivo_prefixo=f"base_{titulos['arquivo']}_sem_movimentacao",
+        titulo_categoria="Dias sem movimentação",
+        titulo_valor="Quantidade de pedidos",
+        numerico=True,
+    )
 
     st.subheader(titulos["tabela"])
     st.caption(f"Total: {len(filtrado)}")
-    st.dataframe(filtrado, use_container_width=True, hide_index=True)
+    st.dataframe(filtrado, width="stretch", hide_index=True)
     botao_exportar_excel(
         filtrado,
         nome_arquivo=f"base_em_aberto_{titulos['arquivo']}.xlsx",

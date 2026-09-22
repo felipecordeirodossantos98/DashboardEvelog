@@ -12,13 +12,21 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from evelog_dashboard.config import LOGO_PATH, PAGE_ICON, PAGE_TITLE
+from evelog_dashboard.config import (
+    LOGO_PATH,
+    OCORRENCIAS_JUSTIFICADAS,
+    PAGE_ICON,
+    PAGE_TITLE,
+)
 from evelog_dashboard.data import (
     carregar_planilha_bytes,
     preparar_base_global,
     separar_bases,
     unificar_bases,
+    filtrar_periodo_datas,
+    preparar_entregues,
 )
+from evelog_dashboard.summaries import aplicar_regras_otd
 from evelog_dashboard.ui import (
     botao_exportar_excel,
     instalar_confirmacao_saida,
@@ -93,11 +101,13 @@ def _aplicar_filtro_global_emissao(base: pd.DataFrame) -> pd.DataFrame:
         st.session_state["filtro_global_emissao"] = (min_emissao, max_emissao)
         st.session_state["global_base_signature"] = assinatura
 
+    # Como o valor do widget já é controlado pelo Session State, não passamos
+    # ``value`` ao date_input. Isso evita o aviso do Streamlit sobre definir o
+    # mesmo widget simultaneamente pelo parâmetro padrão e pela Session State API.
     col_filtro, _, col_metrica = st.columns([1, 2, 1])
     with col_filtro:
         periodo = st.date_input(
             "📅 Período de emissão dos pedidos",
-            value=(min_emissao, max_emissao),
             min_value=min_emissao,
             max_value=max_emissao,
             key="filtro_global_emissao",
@@ -121,10 +131,109 @@ def _aplicar_filtro_global_emissao(base: pd.DataFrame) -> pd.DataFrame:
     return filtrada
 
 
+def _opcoes_justificativas_resumo(base: pd.DataFrame) -> list[str]:
+    """Replica as opções válidas de justificativa usadas na aba de OTD."""
+    if base.empty or "Ocorrencias" not in base.columns:
+        return []
+
+    atrasados = base[base["Prazo Base Ajustado"].eq("FORA DO PRAZO")]
+    ocorrencias = (
+        atrasados["Ocorrencias"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    return sorted(
+        valor
+        for valor in ocorrencias.unique().tolist()
+        if valor and valor.upper() != "NAN"
+    )
+
+
+def _aplicar_filtros_otd_ao_resumo(df_entregues: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Aplica ao resumo exatamente as regras ativas da aba Performance OTD.
+
+    O resumo acompanha:
+    - período de entrega;
+    - dias extras;
+    - baixas indevidas;
+    - justificativas consideradas.
+
+    Ordenação e visualização (UF/Região) são apenas controles de apresentação e
+    não alteram os totais do resumo.
+    """
+    base = preparar_entregues(df_entregues)
+
+    periodo = st.session_state.get("entregues_periodo_entrega")
+    if (
+        not base.empty
+        and "Dt Evento" in base.columns
+        and isinstance(periodo, (tuple, list))
+        and len(periodo) == 2
+    ):
+        inicio, fim = periodo
+        base = filtrar_periodo_datas(
+            base,
+            "Dt Evento",
+            inicio,
+            fim,
+            incluir_dia_final=True,
+        )
+
+    dias_extra = int(st.session_state.get("entregues_dias_extra", 0) or 0)
+    usar_baixa_indevida = bool(
+        st.session_state.get("entregues_baixas_indevidas", False)
+    )
+
+    # Primeiro aplica apenas as regras do OTD base. Isso reproduz a mesma lista
+    # de ocorrências elegíveis que alimenta o multiselect da aba de Entregues.
+    base_sem_justificativas = aplicar_regras_otd(
+        base,
+        dias_extra=dias_extra,
+        justificativas=(),
+        usar_baixa_indevida=usar_baixa_indevida,
+    )
+    opcoes_justificativas = _opcoes_justificativas_resumo(base_sem_justificativas)
+
+    chave_justificativas = "entregues_justificativas"
+    if chave_justificativas in st.session_state:
+        justificativas = [
+            valor
+            for valor in st.session_state.get(chave_justificativas, [])
+            if valor in opcoes_justificativas
+        ]
+    else:
+        # No primeiro carregamento, usa o mesmo padrão da aba Performance OTD
+        # para o resumo já nascer coerente, sem depender de um segundo rerun.
+        justificativas = [
+            ocorrencia
+            for ocorrencia in OCORRENCIAS_JUSTIFICADAS
+            if ocorrencia in opcoes_justificativas
+        ]
+
+    base_parametrizada = aplicar_regras_otd(
+        base,
+        dias_extra=dias_extra,
+        justificativas=justificativas,
+        usar_baixa_indevida=usar_baixa_indevida,
+    )
+
+    regras = {
+        "periodo": periodo,
+        "dias_extra": dias_extra,
+        "baixas_indevidas": usar_baixa_indevida,
+        "justificativas": justificativas,
+    }
+    return base_parametrizada, regras
+
+
 def main() -> None:
     instalar_confirmacao_saida()
 
-    st.sidebar.image(LOGO_PATH, width=180)
+    # Logo é opcional: se o arquivo não existir, o dashboard continua abrindo.
+    if LOGO_PATH.is_file():
+        st.sidebar.image(str(LOGO_PATH), width=180)
+
     st.title(PAGE_TITLE)
 
     st.sidebar.header("Importar Planilhas")
@@ -146,14 +255,36 @@ def main() -> None:
     base_filtrada = _aplicar_filtro_global_emissao(base)
     bases = separar_bases(base_filtrada)
 
+    # O bloco de Entregues do resumo usa a MESMA base parametrizada da aba
+    # Performance OTD. Assim, período, dias extras, baixas indevidas e
+    # justificativas alteram os números/percentuais do resumo imediatamente.
+    entregues_resumo, regras_resumo = _aplicar_filtros_otd_ao_resumo(
+        bases.entregues
+    )
+
     renderizar_resumo_sidebar(
         total=len(bases.completa),
         abertos=len(bases.abertos),
         atrasados=len(bases.abertos_atrasados),
         no_prazo=len(bases.abertos_no_prazo),
-        entregues=len(bases.entregues),
+        entregues=len(entregues_resumo),
+        entregues_no_prazo=int(
+            entregues_resumo["Prazo Ajustado"].eq("NO PRAZO").sum()
+        ),
+        entregues_fora_prazo=int(
+            entregues_resumo["Prazo Ajustado"].eq("FORA DO PRAZO").sum()
+        ),
         nao_entregues=len(bases.encerrados),
     )
+
+    periodo_entrega = regras_resumo["periodo"]
+    if isinstance(periodo_entrega, (tuple, list)) and len(periodo_entrega) == 2:
+        inicio, fim = periodo_entrega
+        justificativas_txt = (
+            ", ".join(regras_resumo["justificativas"])
+            if regras_resumo["justificativas"]
+            else "nenhuma"
+        )
     botao_exportar_excel(
         bases.completa,
         nome_arquivo="base_completa.xlsx",

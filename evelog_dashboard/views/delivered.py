@@ -9,9 +9,11 @@ from ..charts import (
     barras_com_rotulo,
     grafico_evolucao_otd,
     grafico_otd_empilhado,
-    grafico_otd_pizza,
 )
-from ..config import COLUNAS_EXPORT_ATRASOS
+from ..config import (
+    COLUNAS_EXPORT_ATRASOS,
+    OCORRENCIAS_JUSTIFICADAS,
+)
 from ..data import (
     adicionar_grupo_geografico,
     faixa_atraso_por_dia,
@@ -20,18 +22,23 @@ from ..data import (
     preparar_entregues,
 )
 from ..summaries import (
+    adicionar_periodo_otd,
+    aplicar_regras_otd,
     evolucao_otd,
     formatar_resumo_otd_detalhado,
-    preparar_otd_detalhado,
     resumo_faixas_atraso,
     resumo_grupo_com_ocorrencias,
     resumo_ocorrencias_gerais,
-    resumo_otd_pizza,
+    resumo_otd_detalhado,
     resumo_otd_por_grupo,
 )
 from ..ui import (
     botao_exportar_excel,
+    extrair_primeiro_ponto_selecionado,
+    nome_seguro_arquivo,
+    renderizar_download_selecao,
     renderizar_imagens_complementares,
+    renderizar_plotly_selecionavel,
 )
 
 
@@ -42,69 +49,143 @@ def _key(nome: str) -> str:
     return f"{_PREFIX}{nome}"
 
 
+def _opcoes_justificativas(base: pd.DataFrame) -> list[str]:
+    """Lista ocorrências atrasadas disponíveis para uso como justificativa."""
+    if base.empty or "Ocorrencias" not in base.columns:
+        return []
+
+    atrasados = base[base["Prazo Base Ajustado"].eq("FORA DO PRAZO")]
+    ocorrencias = (
+        atrasados["Ocorrencias"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    return sorted(
+        valor
+        for valor in ocorrencias.unique().tolist()
+        if valor and valor.upper() != "NAN"
+    )
+
+
 def _render_resumo_principal(
     df: pd.DataFrame,
     *,
     tipo_ordem: str,
     tipo_visao: str,
 ) -> None:
+    """Renderiza gráfico principal e a visão detalhada correspondente."""
     base = adicionar_grupo_geografico(df, tipo_visao)
-    resumo = resumo_otd_por_grupo(base, tipo_ordem)
+    resumo = resumo_otd_por_grupo(
+        base,
+        tipo_ordem,
+        prazo_col="Prazo Ajustado",
+    )
 
     if resumo.empty:
         st.info("Não há dados de UF/Região para montar o gráfico de OTD.")
         return
 
-    st.plotly_chart(
+    evento = renderizar_plotly_selecionavel(
         grafico_otd_empilhado(resumo),
-        use_container_width=True,
         key=_key("grafico_principal"),
     )
 
-
-def _render_pizzas(df: pd.DataFrame) -> None:
-    original = resumo_otd_pizza(df, justificado=False)
-    justificado = resumo_otd_pizza(df, justificado=True)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("##### OTD Original")
-        st.plotly_chart(
-            grafico_otd_pizza(original),
-            use_container_width=True,
-            key=_key("grafico_pizza_original"),
-        )
-    with col2:
-        st.markdown("##### OTD Justificado")
-        st.plotly_chart(
-            grafico_otd_pizza(justificado),
-            use_container_width=True,
-            key=_key("grafico_pizza_justificado"),
+    detalhado = resumo_otd_detalhado(base, tipo_ordem=tipo_ordem)
+    with st.expander("Detalhes"):
+        st.subheader("OTD — Visão Detalhada")
+        st.dataframe(
+            formatar_resumo_otd_detalhado(detalhado, tipo_visao),
+            width="stretch",
+            hide_index=True,
         )
 
+        st.subheader("OTD — Visão diária, semanal e mensal")
+        _render_evolucao_conteudo(df)
 
-def _render_evolucao(df: pd.DataFrame) -> None:
-    st.subheader("Evolução do OTD")
+    ponto = extrair_primeiro_ponto_selecionado(evento)
+    if ponto:
+        grupo = ponto.get("x")
+        curva = ponto.get("curve_number")
+        customdata = ponto.get("customdata")
+        prazo_custom = (
+            customdata[0]
+            if isinstance(customdata, (list, tuple)) and customdata
+            else None
+        )
+        if grupo is not None and (curva in (0, 1) or prazo_custom in ("NO PRAZO", "FORA DO PRAZO")):
+            prazo = prazo_custom or ("NO PRAZO" if curva == 0 else "FORA DO PRAZO")
+            rotulo_prazo = "No prazo" if prazo == "NO PRAZO" else "Fora do prazo"
+            selecionada = base.copy()
+            if str(grupo) != "Total":
+                selecionada = selecionada[selecionada["Grupo"].astype(str).eq(str(grupo))]
+            selecionada = selecionada[selecionada["Prazo Ajustado"].eq(prazo)].copy()
+
+            renderizar_download_selecao(
+                selecionada,
+                descricao=f"{tipo_visao}: {grupo} · {rotulo_prazo}",
+                nome_arquivo=(
+                    f"base_otd_{nome_seguro_arquivo(grupo)}_"
+                    f"{nome_seguro_arquivo(rotulo_prazo)}.xlsx"
+                ),
+                key=_key("download_grafico_principal"),
+            )
+
+
+def _render_evolucao_conteudo(df: pd.DataFrame) -> None:
+    """Renderiza a evolução temporal e o drill-down por período dentro da visão detalhada."""
     tipo_periodo = st.radio(
         "Período",
         ["Diário", "Semanal", "Mensal"],
         horizontal=True,
         key=_key("periodicidade"),
     )
-    evolucao = evolucao_otd(df, tipo_periodo)
+    evolucao = evolucao_otd(
+        df,
+        tipo_periodo,
+        prazo_col="Prazo Ajustado",
+    )
     if evolucao.empty:
         st.info("Não há dados suficientes para a evolução do OTD.")
         return
 
-    st.plotly_chart(
+    evento = renderizar_plotly_selecionavel(
         grafico_evolucao_otd(evolucao),
-        use_container_width=True,
         key=_key("grafico_evolucao"),
+    )
+
+    ponto = extrair_primeiro_ponto_selecionado(evento)
+    if not ponto or ponto.get("x") is None:
+        return
+
+    periodo_clicado = pd.to_datetime(ponto["x"], errors="coerce")
+    if pd.isna(periodo_clicado):
+        return
+
+    base_periodos = adicionar_periodo_otd(df, tipo_periodo)
+    periodo_serie = pd.to_datetime(base_periodos["Periodo"], errors="coerce")
+    selecionada = base_periodos[periodo_serie.eq(periodo_clicado)].copy()
+    selecionada = selecionada.drop(columns=["Periodo"], errors="ignore")
+
+    renderizar_download_selecao(
+        selecionada,
+        descricao=(
+            f"{tipo_periodo}: {periodo_clicado.strftime('%d/%m/%Y')}"
+        ),
+        nome_arquivo=(
+            f"base_otd_{nome_seguro_arquivo(tipo_periodo)}_"
+            f"{periodo_clicado.strftime('%Y-%m-%d')}.xlsx"
+        ),
+        key=_key("download_evolucao"),
     )
 
 
 def _render_analise_atrasos(df_entregues: pd.DataFrame) -> None:
-    atrasos = preparar_atrasos_entregues(df_entregues)
+    """Renderiza somente os atrasos que restaram após todas as regras ativas."""
+    atrasos = preparar_atrasos_entregues(
+        df_entregues,
+        prazo_col="Prazo Ajustado",
+    )
 
     distribuicao = (
         atrasos.groupby("Dias Atraso")
@@ -114,13 +195,13 @@ def _render_analise_atrasos(df_entregues: pd.DataFrame) -> None:
     )
 
     if distribuicao.empty:
-        st.info("Não há atrasos na base.")
+        st.info("Não há atrasos na base com as regras selecionadas.")
     else:
         st.subheader("Distribuição de atrasos (dias)")
         st.caption(f"Total de pedidos em atraso: {int(distribuicao['Pedidos'].sum())}")
         distribuicao["Dias_str"] = distribuicao["Dias Atraso"].astype(int).astype(str)
         ordem = distribuicao["Dias_str"].tolist()
-        st.altair_chart(
+        evento = renderizar_plotly_selecionavel(
             barras_com_rotulo(
                 distribuicao,
                 categoria="Dias_str",
@@ -131,26 +212,39 @@ def _render_analise_atrasos(df_entregues: pd.DataFrame) -> None:
                 altura=400,
                 cor="#6baed6",
             ),
-            use_container_width=True,
+            key=_key("grafico_distribuicao_atrasos"),
         )
-
-    # Tabela detalhada: uma linha por dia de atraso.
-    if atrasos.empty:
-        st.info("Não há atrasos para montar as faixas.")
-    else:
-        st.subheader("Faixas de atraso e ocorrências")
-        st.dataframe(
-            resumo_faixas_atraso(atrasos),
-            use_container_width=True,
-            hide_index=True,
-        )
+        ponto = extrair_primeiro_ponto_selecionado(evento)
+        if ponto and ponto.get("x") is not None:
+            dia = pd.to_numeric(pd.Series([ponto["x"]]), errors="coerce").iloc[0]
+            if pd.notna(dia):
+                dia_int = int(dia)
+                selecionada = atrasos[
+                    atrasos["Dias Atraso"].astype(int).eq(dia_int)
+                ].copy()
+                renderizar_download_selecao(
+                    selecionada,
+                    descricao=f"{dia_int} dia(s) de atraso",
+                    nome_arquivo=f"base_atrasos_{dia_int}_dias.xlsx",
+                    key=_key("download_distribuicao_atrasos"),
+                )
 
     resumo_oc = resumo_ocorrencias_gerais(atrasos)
     if resumo_oc.empty:
         st.info("Não há ocorrências na base.")
     else:
         st.subheader("Ocorrências")
-        st.dataframe(resumo_oc, use_container_width=True, hide_index=True)
+        st.dataframe(resumo_oc, width="stretch", hide_index=True)
+
+    if atrasos.empty:
+        st.info("Não há atrasos para montar as faixas.")
+    else:
+        st.subheader("Faixas de atraso e ocorrências")
+        st.dataframe(
+            resumo_faixas_atraso(atrasos),
+            width="stretch",
+            hide_index=True,
+        )
 
     unidades_base = atrasos[atrasos["Destino"].notna()].copy()
     if unidades_base.empty:
@@ -162,7 +256,7 @@ def _render_analise_atrasos(df_entregues: pd.DataFrame) -> None:
             "Destino",
             nome_grupo_saida="Unidade",
         )
-        st.dataframe(unidades, use_container_width=True, hide_index=True)
+        st.dataframe(unidades, width="stretch", hide_index=True)
 
     exportacao = atrasos.copy()
     if not exportacao.empty:
@@ -177,58 +271,6 @@ def _render_analise_atrasos(df_entregues: pd.DataFrame) -> None:
         usar_sidebar=False,
         key=_key("exportar_atrasos"),
     )
-
-
-def _render_otd_detalhado(
-    df: pd.DataFrame,
-    *,
-    tipo_visao: str,
-    tipo_ordem: str,
-) -> None:
-    st.subheader("Performance OTD – Visão Detalhada")
-
-    col5, col6, _, col7 = st.columns([1, 1, 1, 1])
-    with col5:
-        usar_justificados = st.checkbox(
-            "Atrasos justificados",
-            value=True,
-            key=_key("usar_justificados"),
-        )
-    with col6:
-        usar_baixa_indevida = st.checkbox(
-            "Baixas indevidas",
-            value=False,
-            key=_key("usar_baixa_indevida"),
-        )
-    with col7:
-        dias_extra = st.number_input(
-            "Dias extras",
-            min_value=0,
-            max_value=10,
-            value=0,
-            key=_key("dias_extra"),
-        )
-
-    base_valida = df.dropna(subset=["Dt Evento", "Previsao"]).copy()
-    if base_valida.empty:
-        st.info("Não há datas válidas para calcular a visão detalhada do OTD.")
-        renderizar_imagens_complementares()
-        return
-
-    resumo, _ = preparar_otd_detalhado(
-        base_valida,
-        tipo_visao=tipo_visao,
-        tipo_ordem=tipo_ordem,
-        dias_extra=int(dias_extra),
-        usar_justificados=usar_justificados,
-        usar_baixa_indevida=usar_baixa_indevida,
-    )
-    st.dataframe(
-        formatar_resumo_otd_detalhado(resumo, tipo_visao),
-        use_container_width=True,
-        hide_index=True,
-    )
-    renderizar_imagens_complementares()
 
 
 def render(df_entregues: pd.DataFrame) -> None:
@@ -249,7 +291,14 @@ def render(df_entregues: pd.DataFrame) -> None:
     min_data = datas_validas.min().date()
     max_data = datas_validas.max().date()
 
-    col_data, col_ordem, col_visao, col_total = st.columns(4)
+    # ------------------------------------------------------------------
+    # PAINEL PRINCIPAL DE REGRAS
+    # Tudo abaixo deste bloco usa a mesma base parametrizada.
+    # ------------------------------------------------------------------
+    col_data, col_ordem, col_visao, _, col_total = st.columns(
+        [1.45, 1.25, 1.05, 0.95, 0.9]
+    )
+
     with col_data:
         data_evento = st.date_input(
             "Período de entrega",
@@ -272,7 +321,6 @@ def render(df_entregues: pd.DataFrame) -> None:
             horizontal=True,
             key=_key("tipo_visao"),
         )
-
     filtrado = base
     if isinstance(data_evento, tuple) and len(data_evento) == 2:
         filtrado = filtrar_periodo_datas(
@@ -290,16 +338,83 @@ def render(df_entregues: pd.DataFrame) -> None:
         st.info("Não há pedidos entregues no período selecionado.")
         return
 
+    # Segunda linha: mantém os controles de regra agrupados. A coluna de
+    # justificativas usa a mesma largura do campo de período da primeira linha.
+    # Mantém o campo "Dias extras" alinhado horizontalmente com
+    # "Visualização" da linha acima. As duas primeiras larguras repetem
+    # Período de entrega + Ordenar por.
+    col_justificativas, col_baixa, col_dias, _ = st.columns(
+        [1.45, 1.25, 0.55, 2.35]
+    )
+
+    with col_baixa:
+        usar_baixa_indevida = st.checkbox(
+            "Baixas indevidas",
+            value=False,
+            key=_key("baixas_indevidas"),
+        )
+
+    with col_dias:
+        dias_extra = st.number_input(
+            "Dias extras",
+            min_value=0,
+            max_value=30,
+            value=0,
+            step=1,
+            key=_key("dias_extra"),
+        )
+
+    # Calcula o OTD base com dias extras + baixa indevida para descobrir quais
+    # ocorrências ainda estão atrasadas e podem ser usadas como justificativa.
+    base_sem_justificativas = aplicar_regras_otd(
+        filtrado,
+        dias_extra=int(dias_extra),
+        justificativas=(),
+        usar_baixa_indevida=usar_baixa_indevida,
+    )
+    opcoes_justificativas = _opcoes_justificativas(base_sem_justificativas)
+    padrao_justificativas = [
+        ocorrencia
+        for ocorrencia in OCORRENCIAS_JUSTIFICADAS
+        if ocorrencia in opcoes_justificativas
+    ]
+
+    key_justificativas = _key("justificativas")
+    if key_justificativas not in st.session_state:
+        st.session_state[key_justificativas] = padrao_justificativas
+    else:
+        st.session_state[key_justificativas] = [
+            valor
+            for valor in st.session_state[key_justificativas]
+            if valor in opcoes_justificativas
+        ]
+
+    with col_justificativas:
+        justificativas = st.multiselect(
+            "Justificativas consideradas",
+            options=opcoes_justificativas,
+            key=key_justificativas,
+        )
+
+    base_parametrizada = aplicar_regras_otd(
+        filtrado,
+        dias_extra=int(dias_extra),
+        justificativas=justificativas,
+        usar_baixa_indevida=usar_baixa_indevida,
+    )
+
+    regras_txt = ", ".join(justificativas) if justificativas else "nenhuma"
+    st.caption(
+        f"OTD base: +{int(dias_extra)} dia(s) · "
+        f"Baixas indevidas: {'sim' if usar_baixa_indevida else 'não'} · "
+        f"Justificativas do OTD Justificado: {regras_txt}"
+    )
+
+    # A partir daqui todos os componentes usam a MESMA base parametrizada.
     _render_resumo_principal(
-        filtrado,
+        base_parametrizada,
         tipo_ordem=tipo_ordem,
         tipo_visao=tipo_visao,
     )
-    _render_pizzas(filtrado)
-    _render_evolucao(filtrado)
-    _render_analise_atrasos(filtrado)
-    _render_otd_detalhado(
-        filtrado,
-        tipo_visao=tipo_visao,
-        tipo_ordem=tipo_ordem,
-    )
+    _render_analise_atrasos(base_parametrizada)
+    renderizar_imagens_complementares()

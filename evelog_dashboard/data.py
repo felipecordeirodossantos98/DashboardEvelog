@@ -236,6 +236,23 @@ def preparar_base_global(base: pd.DataFrame) -> pd.DataFrame:
             errors="coerce",
         )
 
+    # Algumas planilhas trazem Nota Fiscal como número e outras como texto.
+    # Depois da concatenação isso cria uma coluna ``object`` com tipos mistos,
+    # que o PyArrow não consegue serializar diretamente no st.dataframe.
+    # Como NF é um identificador (não uma medida), mantemos sempre como texto.
+    for coluna in resultado.columns:
+        if "nota fiscal" not in str(coluna).lower():
+            continue
+
+        def _formatar_nf(valor):
+            if pd.isna(valor):
+                return pd.NA
+            if isinstance(valor, float) and valor.is_integer():
+                return str(int(valor))
+            return str(valor).strip()
+
+        resultado[coluna] = resultado[coluna].map(_formatar_nf).astype("string")
+
     if "Ocorrencias" not in resultado.columns:
         resultado["Ocorrencias"] = ""
 
@@ -345,11 +362,21 @@ def adicionar_grupo_geografico(df: pd.DataFrame, tipo_visao: str) -> pd.DataFram
     return resultado
 
 
-def preparar_atrasos_entregues(df_entregues: pd.DataFrame) -> pd.DataFrame:
-    """Retorna apenas entregas atrasadas com a coluna ``Dias Atraso``."""
+def preparar_atrasos_entregues(
+    df_entregues: pd.DataFrame,
+    *,
+    prazo_col: str = "Prazo",
+) -> pd.DataFrame:
+    """Retorna apenas entregas que continuam atrasadas na regra ativa.
+
+    Se a base já passou por ``aplicar_regras_otd``, a coluna ``Dias Atraso``
+    existente é preservada (portanto já considera dias extras). Caso contrário,
+    ela é calculada pela previsão original para manter compatibilidade.
+    """
     resultado = df_entregues.copy()
     if resultado.empty:
-        resultado["Dias Atraso"] = pd.Series(dtype="int64")
+        if "Dias Atraso" not in resultado.columns:
+            resultado["Dias Atraso"] = pd.Series(dtype="int64")
         return resultado
 
     if "Dt Evento" not in resultado.columns or "Previsao" not in resultado.columns:
@@ -357,11 +384,16 @@ def preparar_atrasos_entregues(df_entregues: pd.DataFrame) -> pd.DataFrame:
         return resultado.iloc[0:0].copy()
 
     resultado = resultado.dropna(subset=["Dt Evento", "Previsao"]).copy()
-    resultado["Dias Atraso"] = (
-        resultado["Dt Evento"].dt.normalize()
-        - resultado["Previsao"].dt.normalize()
-    ).dt.days
-    return resultado[resultado["Dias Atraso"].gt(0)].copy()
+    if "Dias Atraso" not in resultado.columns:
+        resultado["Dias Atraso"] = (
+            resultado["Dt Evento"].dt.normalize()
+            - resultado["Previsao"].dt.normalize()
+        ).dt.days
+
+    mask = resultado["Dias Atraso"].gt(0)
+    if prazo_col in resultado.columns:
+        mask &= resultado[prazo_col].eq("FORA DO PRAZO")
+    return resultado.loc[mask].copy()
 
 
 def faixa_atraso_por_dia(dias: int | float) -> str:

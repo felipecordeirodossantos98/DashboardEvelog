@@ -6,7 +6,13 @@ import pandas as pd
 import streamlit as st
 
 from ..charts import barras_com_rotulo
-from ..ui import botao_exportar_excel
+from ..ui import (
+    botao_exportar_excel,
+    extrair_primeiro_ponto_selecionado,
+    nome_seguro_arquivo,
+    renderizar_download_selecao,
+    renderizar_plotly_selecionavel,
+)
 
 
 _PREFIX = "nao_entregues_"
@@ -56,7 +62,7 @@ def render(df_encerrados: pd.DataFrame) -> None:
 
     if not status_counts.empty:
         st.subheader("Status")
-        st.altair_chart(
+        evento = renderizar_plotly_selecionavel(
             barras_com_rotulo(
                 status_counts,
                 categoria="Status",
@@ -65,12 +71,26 @@ def render(df_encerrados: pd.DataFrame) -> None:
                 titulo_categoria="Status",
                 titulo_valor="Quantidade de pedidos",
             ),
-            use_container_width=True,
+            key=_key("grafico_status"),
         )
+        ponto = extrair_primeiro_ponto_selecionado(evento)
+        if ponto and ponto.get("y") is not None:
+            status_clicado = str(ponto["y"])
+            base_selecionada = filtrado[
+                filtrado["Status_plot"].astype(str).eq(status_clicado)
+            ].copy()
+            renderizar_download_selecao(
+                base_selecionada,
+                descricao=f"Status: {status_clicado}",
+                nome_arquivo=(
+                    f"base_nao_entregues_{nome_seguro_arquivo(status_clicado)}.xlsx"
+                ),
+                key=_key("download_status"),
+            )
 
     st.subheader("Pedidos filtrados")
     st.caption(f"Total: {len(filtrado)}")
-    st.dataframe(filtrado, use_container_width=True, hide_index=True)
+    st.dataframe(filtrado, width="stretch", hide_index=True)
     botao_exportar_excel(
         filtrado,
         nome_arquivo="base_nao_entregues.xlsx",
